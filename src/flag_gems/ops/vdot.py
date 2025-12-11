@@ -50,7 +50,6 @@ def compute_vdot(
 
 # support old version triton which do not support tl.split
 @libentry()
-@triton.heuristics(runtime.get_heuristic_config("vdot"))
 @triton.jit()
 def vdot_kernel_complex(
     inp_ptr,
@@ -65,7 +64,7 @@ def vdot_kernel_complex(
 ):
     pid = tl.program_id(0)
 
-    base_offset = 2 * pid * BLOCK_SIZE + 2 * tl.arange(0, BLOCK_SIZE) + tl.arange(0, 1)
+    base_offset = 2 * pid * BLOCK_SIZE + 2 * tl.arange(0, BLOCK_SIZE)
 
     inp_real_offset = inp_stride * base_offset
     inp_imag_offset = inp_real_offset + 1
@@ -75,20 +74,40 @@ def vdot_kernel_complex(
 
     mask = base_offset < n_elements
 
-    inp_real = tl.load(inp_ptr + inp_real_offset, mask=mask)
-    inp_imag = tl.load(inp_ptr + inp_imag_offset, mask=mask)
+    inp_real = tl.load(inp_ptr + inp_real_offset, mask=mask, other=0.0)
+    inp_imag = tl.load(inp_ptr + inp_imag_offset, mask=mask, other=0.0)
 
-    other_real = tl.load(other_ptr + other_real_offset, mask=mask)
-    other_imag = tl.load(other_ptr + other_imag_offset, mask=mask)
+    other_real = tl.load(other_ptr + other_real_offset, mask=mask, other=0.0)
+    other_imag = tl.load(other_ptr + other_imag_offset, mask=mask, other=0.0)
 
     # Compute based on conjugate flags
     out_real, out_imag = compute_vdot(
         inp_real, inp_imag, other_real, other_imag, inp_is_conj, other_is_conj
     )
 
-    tl.atomic_add(out_ptr, out_real)
-    tl.atomic_add(out_ptr + 1, out_imag)
+    temp_offset = pid * 2
+    tl.store(out_ptr + temp_offset, out_real)
+    tl.store(out_ptr + temp_offset + 1, out_imag)
 
+@libentry()
+@triton.jit()
+def reduce_kernel_complex(
+    input_ptr,
+    out_ptr,
+    n_blocks,
+    BLOCK_SIZE: tl.constexpr
+):
+    pid = tl.program_id(0)
+    base_offset = tl.arange(0, BLOCK_SIZE)
+    mask = base_offset < n_blocks
+
+    inp_real = tl.load(input_ptr+base_offset*2, mask=mask, other=0.0)
+    inp_imag = tl.load(input_ptr+base_offset*2+1,mask=mask, other=0.0)
+    final_out_real = tl.sum(inp_real)
+    final_out_imag = tl.sum(inp_imag)
+    if pid == 0:
+        tl.store(out_ptr, final_out_real)
+        tl.store(out_ptr+1, final_out_imag)
 
 # only support real number
 @libentry()
@@ -104,15 +123,42 @@ def dot_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offset < n_elements
+    num_progs = tl.num_programs(0)
+    grid_stride = num_progs * BLOCK_SIZE
+    
+    acc = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
+    
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    
+    for current_start in range(0, n_elements, grid_stride):
+        cur_offsets = current_start + offsets
+        mask = cur_offsets < n_elements
 
-    inp = tl.load(inp_ptr + inp_stride * offset, mask=mask).to(tl.float32)
-    other = tl.load(other_ptr + other_stride * offset, mask=mask).to(tl.float32)
+        inp = tl.load(inp_ptr + inp_stride * cur_offsets, mask=mask, other=0.0).to(tl.float32)
+        other = tl.load(other_ptr + other_stride * cur_offsets, mask=mask, other=0.0).to(tl.float32)
 
-    out = tl.sum(inp * other)
-    tl.atomic_add(out_ptr, out)
+        acc += inp * other
 
+    out = tl.sum(acc)
+    tl.store(out_ptr + pid, out)
+
+@libentry()
+@triton.jit()
+def reduce_kernel(
+    partial_sums_ptr,
+    output_ptr,
+    n_blocks,
+    BLOCK_SIZE: tl.constexpr,
+):
+
+    offset = tl.arange(0, BLOCK_SIZE)
+    mask = offset < n_blocks
+    
+    partial_sums = tl.load(partial_sums_ptr + offset, mask=mask, other=0.0)
+    final_sum = tl.sum(partial_sums)
+    
+    if tl.program_id(0) == 0:
+        tl.store(output_ptr, final_sum)
 
 def vdot(input: Tensor, other: Tensor):
     logger.debug("GEMS VDOT")
@@ -148,33 +194,53 @@ def vdot(input: Tensor, other: Tensor):
 
         n_elements = inp_real.numel()
         n_complex = inp.numel()
+        
+        block_size = runtime.get_heuristic_config("vdot")["BLOCK_SIZE"]({"n_elements":n_elements})
+        num_blocks = triton.cdiv(n_complex, block_size)
 
-        output_real = torch.zeros(2, dtype=inp_real.dtype, device=inp.device)
-
-        grid = lambda meta: (triton.cdiv(n_complex, meta["BLOCK_SIZE"]),)
-
+        partial_real_sums = torch.empty(2 * num_blocks, dtype=inp_real.dtype, device=inp.device)
+        grid = (num_blocks, )
         vdot_kernel_complex[grid](
             inp_real,
             other_real,
-            output_real,
+            partial_real_sums,
             n_elements=n_elements,
             inp_is_conj=inp_is_conj,
             other_is_conj=other_is_conj,
             inp_stride=inp_stride,
             other_stride=other_stride,
+            BLOCK_SIZE = block_size,
         )
-
+        output_real = torch.empty(2, dtype=inp_real.dtype, device=inp.device)
+        reduce_kernel_complex[(1,)](
+            partial_real_sums,
+            output_real,
+            num_blocks,
+            BLOCK_SIZE=triton.next_power_of_2(num_blocks),
+        )
         return torch.view_as_complex(output_real)
     else:
-        output = torch.zeros([], dtype=torch.float32, device=inp.device)
         n_elements = inp.numel()
-        grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-        dot_kernel[grid](
+        block_size = runtime.get_heuristic_config("vdot")["BLOCK_SIZE"]({"n_elements":n_elements})
+        
+        num_blocks = triton.cdiv(n_elements, block_size)
+        grid_size = min(num_blocks, 1024)
+
+        grid = (num_blocks,)
+        partial_sums = torch.empty(grid_size, dtype=torch.float32, device=inp.device)
+        dot_kernel[(grid_size,)](
             inp,
             other,
-            output,
+            partial_sums,
             n_elements=n_elements,
             inp_stride=inp_stride,
             other_stride=other_stride,
+            BLOCK_SIZE = block_size,
         )
-        return output.to(inp.dtype)
+        output = torch.empty([], dtype=input.dtype, device=inp.device)
+        reduce_bs = min(triton.next_power_of_2(grid_size), 1024)
+        reduce_kernel[(1,)](
+                partial_sums, output, num_blocks,
+                BLOCK_SIZE=reduce_bs,
+        )
+        return output
