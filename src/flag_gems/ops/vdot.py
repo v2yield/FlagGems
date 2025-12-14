@@ -63,31 +63,36 @@ def vdot_kernel_complex(
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
+    num_progs = tl.num_programs(0)
+    
+    grid_stride = num_progs * BLOCK_SIZE
+    
+    acc_real = tl.zeros([], dtype=tl.float32)
+    acc_imag = tl.zeros([], dtype=tl.float32)
+    
 
-    base_offset = 2 * pid * BLOCK_SIZE + 2 * tl.arange(0, BLOCK_SIZE)
+    for current_start in range(0, n_elements // 2, grid_stride):
 
-    inp_real_offset = inp_stride * base_offset
-    inp_imag_offset = inp_real_offset + 1
-
-    other_real_offset = other_stride * base_offset
-    other_imag_offset = other_real_offset + 1
-
-    mask = base_offset < n_elements
-
-    inp_real = tl.load(inp_ptr + inp_real_offset, mask=mask, other=0.0)
-    inp_imag = tl.load(inp_ptr + inp_imag_offset, mask=mask, other=0.0)
-
-    other_real = tl.load(other_ptr + other_real_offset, mask=mask, other=0.0)
-    other_imag = tl.load(other_ptr + other_imag_offset, mask=mask, other=0.0)
-
-    # Compute based on conjugate flags
-    out_real, out_imag = compute_vdot(
-        inp_real, inp_imag, other_real, other_imag, inp_is_conj, other_is_conj
-    )
-
+        complex_idx = current_start + pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = complex_idx < n_elements // 2
+        
+        real_offset = complex_idx * 2
+        
+        inp_real = tl.load(inp_ptr + real_offset * inp_stride, mask=mask, other=0.0)
+        inp_imag = tl.load(inp_ptr + real_offset * inp_stride + 1, mask=mask, other=0.0)
+        
+        other_real = tl.load(other_ptr + real_offset * other_stride, mask=mask, other=0.0)
+        other_imag = tl.load(other_ptr + real_offset * other_stride + 1, mask=mask, other=0.0)
+        
+        out_real, out_imag = compute_vdot(
+            inp_real, inp_imag, other_real, other_imag, inp_is_conj, other_is_conj
+        )
+        acc_real += out_real
+        acc_imag += out_imag
+    
     temp_offset = pid * 2
-    tl.store(out_ptr + temp_offset, out_real)
-    tl.store(out_ptr + temp_offset + 1, out_imag)
+    tl.store(out_ptr + temp_offset, acc_real)
+    tl.store(out_ptr + temp_offset + 1, acc_imag)
 
 @libentry()
 @triton.jit()
@@ -126,7 +131,7 @@ def dot_kernel(
     num_progs = tl.num_programs(0)
     grid_stride = num_progs * BLOCK_SIZE
     
-    acc = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
+    acc = tl.zeros([], dtype=tl.float32)
     
     offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     
@@ -137,10 +142,9 @@ def dot_kernel(
         inp = tl.load(inp_ptr + inp_stride * cur_offsets, mask=mask, other=0.0).to(tl.float32)
         other = tl.load(other_ptr + other_stride * cur_offsets, mask=mask, other=0.0).to(tl.float32)
 
-        acc += inp * other
+        acc += tl.sum(inp * other)
 
-    out = tl.sum(acc)
-    tl.store(out_ptr + pid, out)
+    tl.store(out_ptr + pid, acc)
 
 @libentry()
 @triton.jit()
@@ -220,8 +224,10 @@ def vdot(input: Tensor, other: Tensor):
         block_size = runtime.get_heuristic_config("vdot")["BLOCK_SIZE"]({"n_elements":n_elements})
         num_blocks = triton.cdiv(n_complex, block_size)
 
-        partial_real_sums = torch.empty(2 * num_blocks, dtype=inp_real.dtype, device=inp.device)
-        grid = (num_blocks, )
+        grid_size = min(num_blocks, 1024)
+    
+        partial_real_sums = torch.empty(grid_size, dtype=inp_real.dtype, device=inp.device)
+        grid = (grid_size,)
         vdot_kernel_complex[grid](
             inp_real,
             other_real,
@@ -237,8 +243,8 @@ def vdot(input: Tensor, other: Tensor):
         reduce_kernel_complex[(1,)](
             partial_real_sums,
             output_real,
-            num_blocks,
-            BLOCK_SIZE=triton.next_power_of_2(num_blocks),
+            grid_size,
+            BLOCK_SIZE=triton.next_power_of_2(grid_size),
         )
         return torch.view_as_complex(output_real)
     elif inp.dtype == torch.float32:
@@ -263,7 +269,7 @@ def vdot(input: Tensor, other: Tensor):
 
         grid = (num_blocks,)
         partial_sums = torch.empty(grid_size, dtype=torch.float32, device=inp.device)
-        dot_kernel[(grid_size,)](
+        dot_kernel[grid](
             inp,
             other,
             partial_sums,
