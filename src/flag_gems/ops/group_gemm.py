@@ -31,16 +31,47 @@ def grouped_launch(
 def get_autotune_config():
     return [
         triton.Config(
-            {"BLOCK_M": BM, "BLOCK_N": BN, "BLOCK_K": BK, "GROUP_M": GM},
-            num_stages=s,
-            num_warps=w,
-        )
-        for GM in [8]
-        for BM in [32, 64, 128]
-        for BN in [32, 64, 128]
-        for BK in [32, 64, 128]
-        for s in [2, 3, 4]
-        for w in [4, 8]
+            {"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 64, "GROUP_M": 8},
+            num_stages=3,
+            num_warps=8,
+            num_ctas=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 128, "GROUP_M": 8},
+            num_stages=2,
+            num_warps=4,
+            num_ctas=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 256, "BLOCK_N": 128, "BLOCK_K": 128, "GROUP_M": 8},
+            num_stages=3,
+            num_warps=4,
+            num_ctas=2,
+        ),
+        triton.Config(
+            {"BLOCK_M": 256, "BLOCK_N": 128, "BLOCK_K": 64, "GROUP_M": 8},
+            num_stages=3,
+            num_warps=8,
+            num_ctas=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 64, "BLOCK_N": 256, "BLOCK_K": 32, "GROUP_M": 4},
+            num_stages=4,
+            num_warps=4,
+            num_ctas=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 32, "GROUP_M": 4},
+            num_stages=4,
+            num_warps=4,
+            num_ctas=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 256, "BLOCK_N": 256, "BLOCK_K": 64, "GROUP_M": 8},
+            num_stages=3,
+            num_warps=8,
+            num_ctas=2,
+        ),
     ]
 
 
@@ -214,8 +245,8 @@ def grouped_matmul_kernel(
 
                 accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
                 for kk in range(0, tl.cdiv(gk, BLOCK_K)):
-                    a = tl.load(a_ptrs, boundary_check=(1,))
-                    b = tl.load(b_ptrs, boundary_check=(0,))
+                    a = tl.load(a_ptrs, boundary_check=(0, 1))
+                    b = tl.load(b_ptrs, boundary_check=(0, 1))
                     accumulator = tl.dot(a, b, acc=accumulator)
                     a_ptrs = tl.advance(a_ptrs, (0, BLOCK_K))
                     b_ptrs = tl.advance(b_ptrs, (BLOCK_K, 0))
@@ -336,58 +367,15 @@ def group_gemm(group_A, group_B, group_C, offs_table, alpha=1, beta=0):
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
 def test_group_gemm_speedup(groups, N, K, dtype):
+    # yapf: disable
     M = [
-        1,
-        2,
-        4,
-        8,
-        16,
-        24,
-        32,
-        40,
-        48,
-        56,
-        64,
-        72,
-        80,
-        88,
-        96,
-        104,
-        112,
-        120,
-        128,
-        136,
-        144,
-        152,
-        160,
-        168,
-        176,
-        184,
-        192,
-        200,
-        208,
-        216,
-        224,
-        232,
-        240,
-        248,
-        256,
-        272,
-        288,
-        304,
-        320,
-        336,
-        352,
-        368,
-        384,
-        400,
-        416,
-        432,
-        448,
-        464,
-        480,
-        496,
-        512,
+        1, 2, 4, 8, 16, 24, 32, 40,
+        48, 56, 64, 72, 80, 88, 96, 104,
+        112, 120, 128, 136, 144, 152, 160, 168,
+        176, 184, 192, 200, 208, 216, 224, 232,
+        240, 248, 256, 272, 288, 304, 320, 336,
+        352, 368, 384, 400, 416, 432, 448, 464,
+        480, 496, 512
     ]
     group_A_list = []
     group_B_list = []
@@ -474,58 +462,15 @@ def test_group_gemm_speedup(groups, N, K, dtype):
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
 def test_group_gemm_accuracy(groups, N, K, dtype):
+    # yapf: disable
     M = [
-        1,
-        2,
-        4,
-        8,
-        16,
-        24,
-        32,
-        40,
-        48,
-        56,
-        64,
-        72,
-        80,
-        88,
-        96,
-        104,
-        112,
-        120,
-        128,
-        136,
-        144,
-        152,
-        160,
-        168,
-        176,
-        184,
-        192,
-        200,
-        208,
-        216,
-        224,
-        232,
-        240,
-        248,
-        256,
-        272,
-        288,
-        304,
-        320,
-        336,
-        352,
-        368,
-        384,
-        400,
-        416,
-        432,
-        448,
-        464,
-        480,
-        496,
-        512,
+        1, 2, 4, 8, 16, 24, 32, 40,
+        48, 56, 64, 72, 80, 88, 96, 104,
+        112, 120, 128, 136, 144, 152, 160, 168,
+        176, 184, 192, 200, 208, 216, 224, 232,
+        240, 248, 256, 272, 288, 304, 320, 336,
+        352, 368, 384, 400, 416, 432, 448, 464,
+        480, 496, 512
     ]
     group_A_list = []
     group_B_list = []
