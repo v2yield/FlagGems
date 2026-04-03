@@ -212,8 +212,8 @@ def group_mm_input_fn(groups, N, K, cur_dtype, device):
     )
 
     yield mat_a, mat_b, offs
-    
-    
+
+
 W8A8_BLOCK_FP8_MNK_SHAPES = [
     (64, 128, 128),
     (128, 256, 512),

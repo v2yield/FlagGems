@@ -31,8 +31,9 @@ else:
         (495, 5333, 71),
     ]
     FLOAT_DTYPES = ORIG_FLOAT_DTYPES
-    
+
 GNK_SHAPES = [(16, 512, 2048), (16, 2560, 2048), (64, 2048, 128)]
+
 
 @pytest.mark.addmm
 @pytest.mark.parametrize("M, N, K", MNK_SHAPES)
