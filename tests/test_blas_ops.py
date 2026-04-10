@@ -8,7 +8,13 @@ import torch
 import flag_gems
 
 from .accuracy_utils import FLOAT_DTYPES as ORIG_FLOAT_DTYPES
-from .accuracy_utils import SCALARS, UT_SHAPES_1D, gems_assert_close, to_reference
+from .accuracy_utils import (
+    SCALARS,
+    UT_SHAPES_1D,
+    SkipVersion,
+    gems_assert_close,
+    to_reference,
+)
 from .conftest import QUICK_MODE
 
 if QUICK_MODE:
@@ -372,6 +378,10 @@ def test_accuracy_mm(M, N, K, dtype, b_column_major):
     gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
 
 
+@pytest.mark.skipif(
+    SkipVersion("torch", "<2.8"),
+    reason="torch._grouped_mm requires PyTorch >= 2.8.0.",
+)
 @pytest.mark.parametrize("groups, N, K", GNK_SHAPES)
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
 def test_accuracy_groupmm(groups, N, K, dtype):

@@ -13,7 +13,7 @@ from benchmark.attri_util import (
     model_shapes,
 )
 from benchmark.conftest import Config
-from benchmark.performance_utils import Benchmark, GenericBenchmark2DOnly
+from benchmark.performance_utils import Benchmark, GenericBenchmark2DOnly, SkipVersion
 
 try:
     from vllm.model_executor.layers.quantization.utils.fp8_utils import (
@@ -336,10 +336,16 @@ class W8A8BlockFP8MatmulBenchmark(Benchmark):
         ),
         pytest.param(
             "groupmm",
-            torch._grouped_mm,  # torch 2.8.0
+            None if SkipVersion("torch", "<2.8") else torch._grouped_mm,  # torch 2.8.0
             group_mm_input_fn,
             GroupmmBenchmark,
-            marks=pytest.mark.groupmm,
+            marks=[
+                pytest.mark.skipif(
+                    SkipVersion("torch", "<2.8"),
+                    reason="torch._grouped_mm requires PyTorch >= 2.8.0.",
+                ),
+                pytest.mark.groupmm,
+            ],
         ),
     ],
 )
