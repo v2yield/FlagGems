@@ -1,6 +1,8 @@
 [build-system]
 # cmake locks to '>=3.20,<4.0' to sync with FlagTree
-requires = ["setuptools==82.0.1", "scikit-build-core==0.12.2", "pybind11==3.0.3", "cmake==3.31.10", "ninja==1.13.0"]
+
+requires = ["setuptools==79.0.1", "scikit-build-core==0.12.2", "pybind11==3.0.3", "cmake>=3.20,<4.0", "ninja==1.13.0"]
+
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -62,8 +64,21 @@ official_torch_270 = [
     "torchaudio==2.7.0",
 ]
 
-nvidia = [
-    "flag_gems[official_torch_290]",
+official_torch_251 = [
+    "torch==2.5.1",
+    "torchvision==0.20.1",
+    "torchaudio==2.5.1",
+]
+
+ascend = [
+    "flagtree==0.5.0+ascend3.2",
+    "torch==2.9.0+cpu",
+    "torch-npu==2.9.0",
+]
+
+hygon = [
+    "flagtree==0.5.0+hcu3.0",
+    "torch==2.9.0+das.opt1.dtk2604",
 ]
 
 iluvatar = [
@@ -73,11 +88,30 @@ iluvatar = [
     "triton==3.1.0+corex.4.4.0",
 ]
 
+kunlunxin = [
+    "regex==2026.4.4",
+    "hyperparameter==0.5.6",
+    "colorama==0.4.6",
+    "psutil==6.1.0",
+]
+
+mthreads = [
+    "torch==2.7.1+musa.4.0.0",
+    "torch_musa==2.7.1",
+    "triton==3.1.0+musa.4.0.0",
+    "numpy==1.26.4",
+    "mkl==2024.0.0",
+]
+
+nvidia = [
+    "flag_gems[official_torch_290]",
+]
+
 tsingmicro = [
     "flag_gems[official_torch_270]",
-    "torch_txda==0.1.0+20260225.008333cf",
+    "torch_txda==0.1.0+20260310.294fc4a6",
     "txops==0.1.0+20260225.5cc33e4e",
-    "triton==3.3.0+git6b95f337",
+    "triton==3.3.0+gitfe2a28fa",
 ]
 
 # Test packages
@@ -115,50 +149,84 @@ build-dir = "build/{cache_tag}"
 
 [tool.uv]
 
+# Tell 'uv' that each index has an equal importance for each package,
+# in other words, don't treat the first index with a matching package
+# as the best one.
 index-strategy = "unsafe-best-match"
 
 conflicts = [
     [
+        { group = "ascend" },
+        { group = "hygon" },
         { group = "iluvatar" },
-        { group = "tsingmicro" },
+        { group = "kunlunxin" },
+        { group = "mthreads" },
         { group = "nvidia" },
+        { group = "tsingmicro" },
     ]
 ]
+
+# Source for Ascend packages
+[[tool.uv.index]]
+name = "ascend-pypi"
+url = "https://resource.flagos.net/repository/flagos-pypi-ascend/simple"
+explicit = true
+
+# Source for Hygon packages
+[[tool.uv.index]]
+name = "hygon-pypi"
+url = "https://resource.flagos.net/repository/flagos-pypi-hygon/simple"
+explicit = true
 
 # Source for Iluvatar packages
 [[tool.uv.index]]
 name = "iluvatar-pypi"
 url = "https://resource.flagos.net/repository/flagos-pypi-iluvatar/simple"
+explicit = true
+
+# Source for Kunlunxin packages
+[[tool.uv.index]]
+name = "kunlunxin-pypi"
+url = "https://resource.flagos.net/repository/flagos-pypi-kunlunxin/simple"
+explicit = true
+
+# Source for Mthreads packages
+[[tool.uv.index]]
+name = "mthreads-pypi"
+url = "https://resource.flagos.net/repository/flagos-pypi-mthreads/simple"
+explicit = true
 
 # Source for TsingMicro packages
 [[tool.uv.index]]
 name = "tsingmicro-pypi"
 url = "https://resource.flagos.net/repository/flagos-pypi-tsingmicro/simple"
+explicit = true
+
+# Source for Pytorch CU12.8
+[[tool.uv.index]]
+name = "torch-pypi-128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+# Source for Pytorch CU11.8
+[[tool.uv.index]]
+name = "torch-pypi-118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
 
 # Source for common packages
 [[tool.uv.index]]
 name = "default"
 url = "https://mirrors.aliyun.com/pypi/simple/"
-default = true
-
-[[tool.uv.index]]
-name = "torch-pypi"
-url = "https://download.pytorch.org/whl/cu128"
 
 [tool.uv.sources]
 # Mapping from optional groups to index servers
-iluvatar = [
-    { index = "iluvatar-pypi" }
-]
-
-tsingmicro = [
-    { index = "tsingmicro-pypi" }
-]
-
-official_torch_290 = [
-   { index = "torch-pypi"}
-]
-
-official_torch_270 = [
-   { index = "torch-pypi"}
-]
+ascend = { index = "ascend-pypi" }
+hygon = { index = "hygon-pypi" }
+iluvatar = { index = "iluvatar-pypi" }
+kunlunxin = { index = "kunlunxin-pypi" }
+mthreads = { index = "mthreads-pypi" }
+tsingmicro = { index = "tsingmicro-pypi" }
+official_torch_290 = { index = "torch-pypi-128" }
+official_torch_270 = { index = "torch-pypi-128" }
+official_torch_251 = { index = "torch-pypi-118" }
