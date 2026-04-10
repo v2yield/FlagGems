@@ -14,9 +14,18 @@ def supports_tma():
 
 
 if hasattr(tl, "make_tensor_descriptor"):
+    _support_device_tensor_descriptor = True
     make_tensor_descriptor_fn = tl.make_tensor_descriptor
 else:
+    _support_device_tensor_descriptor = False
     make_tensor_descriptor_fn = None
+
+try:
+    from triton.tools.tensor_descriptor import TensorDescriptor
+
+    _support_host_tensor_descriptor = True
+except ImportError:
+    _support_host_tensor_descriptor = False
 
 
 @triton.jit
@@ -512,7 +521,7 @@ def group_gemm(group_A, group_B, group_C, offs_table, alpha=1, beta=0):
     d_g_lds = torch.tensor(group_lds, dtype=torch.int32, device=group_A.device)
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
-    if hasattr(tl, "make_tensor_descriptor") and supports_tma():
+    if _support_device_tensor_descriptor and supports_tma():
 
         def alloc_fn(size, alignment, stream):
             return torch.empty(size, device=group_A.device, dtype=torch.int8)
@@ -562,10 +571,8 @@ def group_mm(A: torch.Tensor, B: torch.Tensor, offs: torch.Tensor) -> torch.Tens
     assert num_groups == offs.numel()
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
     C = A.new_empty(M, N)
-    if hasattr(triton.tools.tensor_descriptor, "TensorDescriptor") and supports_tma():
+    if _support_host_tensor_descriptor and supports_tma():
         dummy_block = [1, 1]
-
-        from triton.tools.tensor_descriptor import TensorDescriptor
 
         a_desc = TensorDescriptor(A, A.shape, A.stride(), dummy_block)
         b_desc = TensorDescriptor(
