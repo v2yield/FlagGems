@@ -127,13 +127,13 @@ from flag_gems.ops.gelu import gelu, gelu_, gelu_backward
 from flag_gems.ops.get_paged_mqa_logits_metadata import get_paged_mqa_logits_metadata
 from flag_gems.ops.get_scheduler_metadata import get_scheduler_metadata
 from flag_gems.ops.glu import glu, glu_backward
-from flag_gems.ops.group_gemm import group_mm
 from flag_gems.ops.greater import (
     greater,
     greater_out,
     greater_scalar,
     greater_scalar_out,
 )
+from flag_gems.ops.group_gemm import group_mm
 from flag_gems.ops.groupnorm import group_norm, group_norm_backward
 from flag_gems.ops.gt import gt, gt_scalar
 from flag_gems.ops.hardsigmoid import hardsigmoid, hardsigmoid_out
