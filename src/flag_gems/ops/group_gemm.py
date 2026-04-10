@@ -13,6 +13,12 @@ def supports_tma():
     return torch.cuda.get_device_capability()[0] >= 9
 
 
+if hasattr(tl, "make_tensor_descriptor"):
+    make_tensor_descriptor_fn = tl.make_tensor_descriptor
+else:
+    make_tensor_descriptor_fn = None
+
+
 @triton.jit
 def grouped_launch(
     pid, m, n, block_m: tl.constexpr, block_n: tl.constexpr, group_m: tl.constexpr
@@ -135,28 +141,28 @@ def grouped_gemm_tma_kernel(
             c_ptr = tl.load(group_c_ptrs + g).to(tl.pointer_type(tl.bfloat16))
             out_ptr = tl.load(group_out_ptrs + g).to(tl.pointer_type(tl.bfloat16))
 
-            a_desc = tl.make_tensor_descriptor(
+            a_desc = make_tensor_descriptor_fn(
                 a_ptr,
                 shape=[gm, gk],
                 strides=[lda, 1],
                 block_shape=[BLOCK_M, BLOCK_K],
             )
 
-            b_desc = tl.make_tensor_descriptor(
+            b_desc = make_tensor_descriptor_fn(
                 b_ptr,
                 shape=[gk, gn],
                 strides=[ldb, 1],
                 block_shape=[BLOCK_K, BLOCK_N],
             )
 
-            c_desc = tl.make_tensor_descriptor(
+            c_desc = make_tensor_descriptor_fn(
                 c_ptr,
                 shape=[gm, gn],
                 strides=[ldc, 1],
                 block_shape=[BLOCK_M, BLOCK_N],
             )
 
-            out_desc = tl.make_tensor_descriptor(
+            out_desc = make_tensor_descriptor_fn(
                 out_ptr,
                 shape=[gm, gn],
                 strides=[ldc, 1],
