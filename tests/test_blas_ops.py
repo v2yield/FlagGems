@@ -413,7 +413,7 @@ def test_accuracy_groupmm(groups, N, K, dtype):
 
     ref_out = torch._grouped_mm(mat_a, mat_b, offs)
     with flag_gems.use_gems():
-        res_out = flag_gems.group_mm(mat_a, mat_b, offs)
+        res_out = torch._grouped_mm(mat_a, mat_b, offs)
 
     gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
 
