@@ -444,8 +444,8 @@ def test_accuracy_groupmm(groups, N, K, dtype):
         res_out = torch._grouped_mm(mat_a, mat_b, offs)
 
     gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
-    
-    
+
+
 @pytest.mark.mm
 @pytest.mark.parametrize("M, N, K", MNK_SHAPES)
 @pytest.mark.parametrize("dtype_a, dtype_b", MIXED_DTYPE_PAIRS)
