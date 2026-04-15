@@ -1033,6 +1033,40 @@ def torch_per_token_group_quant_fp8_ref(x, group_size, scale_ue8m0):
     return x_q, x_s
 
 
+def torch_dynamic_scaled_fp8_quant_ref(x):
+    fp8_max = float(torch.finfo(torch.float8_e4m3fn).max)
+    fp8_min = float(torch.finfo(torch.float8_e4m3fn).min)
+    min_scale = 1.0 / (fp8_max * 512.0)
+
+    scale = (x.abs().max().clamp(min=1e-10).to(torch.float32) / fp8_max).clamp(
+        min=min_scale
+    )
+    x_q = (x.float() / scale).clamp(min=fp8_min, max=fp8_max).to(torch.float8_e4m3fn)
+    return x_q, scale.reshape(1)
+
+
+def torch_per_token_group_quant_int8_ref(x, group_size):
+    int8_min = torch.iinfo(torch.int8).min
+    int8_max = torch.iinfo(torch.int8).max
+    x_ = x.reshape(x.numel() // group_size, group_size)
+    scale = x_.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10).to(torch.float32)
+    scale = scale / int8_max
+    x_q = (x_ / scale).clamp(min=int8_min, max=int8_max).to(torch.int8)
+    return x_q.reshape(x.shape), scale.reshape(
+        x.shape[:-1] + (x.shape[-1] // group_size,)
+    )
+
+
+def torch_per_token_quant_int8_ref(x):
+    x_2d = x.reshape(-1, x.shape[-1]).contiguous()
+    int8_min = torch.iinfo(torch.int8).min
+    int8_max = torch.iinfo(torch.int8).max
+    scale = x_2d.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10).to(torch.float32)
+    scale = scale / int8_max
+    x_q = torch.round(x_2d / scale).clamp(min=int8_min, max=int8_max).to(torch.int8)
+    return x_q.reshape(x.shape), scale.reshape(*x.shape[:-1], 1)
+
+
 class PerTokenGroupQuantFp8Benchmark(GenericBenchmark):
     """
     benchmark for per_token_group_quant_fp8
@@ -1066,6 +1100,72 @@ def test_perf_per_token_group_quant_fp8():
         dtypes=[torch.bfloat16],
     )
     bench.set_gems(flag_gems.per_token_group_quant_fp8)
+    bench.run()
+
+
+class DynamicScaledFp8QuantBenchmark(GenericBenchmark):
+    def set_shapes(self, shape_file_path=None):
+        self.shapes = [(7, 512), (83, 4096), (2048, 5120)]
+
+
+@pytest.mark.dynamic_scaled_fp8_quant
+def test_perf_dynamic_scaled_fp8_quant():
+    def input_kwargs(shape, dtype, device):
+        num_tokens, d = shape
+        x = torch.rand(num_tokens, d, dtype=dtype, device=device)
+        yield (x,)
+
+    bench = DynamicScaledFp8QuantBenchmark(
+        op_name="dynamic_scaled_fp8_quant",
+        input_fn=input_kwargs,
+        torch_op=torch_dynamic_scaled_fp8_quant_ref,
+        dtypes=[torch.bfloat16],
+    )
+    bench.set_gems(flag_gems.dynamic_scaled_fp8_quant)
+    bench.run()
+
+
+class PerTokenGroupQuantInt8Benchmark(GenericBenchmark):
+    def set_shapes(self, shape_file_path=None):
+        self.shapes = [(7, 512, 64), (83, 4096, 128), (2048, 5120, 256)]
+
+
+@pytest.mark.per_token_group_quant_int8
+def test_perf_per_token_group_quant_int8():
+    def input_kwargs(shape, dtype, device):
+        num_tokens, d, group_size = shape
+        x = torch.rand(num_tokens, d, dtype=dtype, device=device).contiguous()
+        yield (x, group_size)
+
+    bench = PerTokenGroupQuantInt8Benchmark(
+        op_name="per_token_group_quant_int8",
+        input_fn=input_kwargs,
+        torch_op=torch_per_token_group_quant_int8_ref,
+        dtypes=[torch.bfloat16],
+    )
+    bench.set_gems(flag_gems.per_token_group_quant_int8)
+    bench.run()
+
+
+class PerTokenQuantInt8Benchmark(GenericBenchmark):
+    def set_shapes(self, shape_file_path=None):
+        self.shapes = [(7, 512), (83, 4096), (2048, 5120)]
+
+
+@pytest.mark.per_token_quant_int8
+def test_perf_per_token_quant_int8():
+    def input_kwargs(shape, dtype, device):
+        num_tokens, d = shape
+        x = torch.rand(num_tokens, d, dtype=dtype, device=device)
+        yield (x,)
+
+    bench = PerTokenQuantInt8Benchmark(
+        op_name="per_token_quant_int8",
+        input_fn=input_kwargs,
+        torch_op=torch_per_token_quant_int8_ref,
+        dtypes=[torch.bfloat16],
+    )
+    bench.set_gems(flag_gems.per_token_quant_int8)
     bench.run()
 
 
