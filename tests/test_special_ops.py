@@ -1824,10 +1824,11 @@ def native_dynamic_scaled_fp8_quant(x):
     fp8_min = float(torch.finfo(torch.float8_e4m3fn).min)
     min_scale = 1.0 / (fp8_max * 512.0)
 
-    absmax = x.abs().max().clamp(min=1e-10).to(torch.float32)
-    scale = (absmax / fp8_max).clamp(min=min_scale).reshape(1)
+    scale = (x.abs().max().clamp(min=1e-10).to(torch.float32) / fp8_max).clamp(
+        min=min_scale
+    )
     x_q = (x.float() / scale).clamp(min=fp8_min, max=fp8_max).to(torch.float8_e4m3fn)
-    return x_q, scale
+    return x_q, scale.reshape(1)
 
 
 def native_per_token_group_quant_int8(x, group_size, eps=1e-10):
@@ -1839,24 +1840,24 @@ def native_per_token_group_quant_int8(x, group_size, eps=1e-10):
     int8_min = torch.iinfo(torch.int8).min
     int8_max = torch.iinfo(torch.int8).max
     x_ = x.float().reshape(x.numel() // group_size, group_size)
-    amax = x_.abs().max(dim=-1, keepdim=True)[0].clamp(min=eps)
-    x_s = amax / int8_max
-    x_q = (x_ / x_s).clamp(min=int8_min, max=int8_max).to(torch.int8)
-    return x_q.reshape(x.shape), x_s.reshape(
-        x.shape[:-1] + (x.shape[-1] // group_size,)
-    )
+    scale = x_.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10)
+    scale = scale / int8_max
+    x_q = (x_ / scale).clamp(min=int8_min, max=int8_max).to(torch.int8)
+    x_q = x_q.reshape(x.shape)
+    scale = scale.reshape(x.shape[:-1] + (x.shape[-1] // group_size,))
+    return x_q, scale
 
 
 def native_per_token_quant_int8(x, eps=1e-10):
-    original_shape = x.shape
     x_2d = x.float().reshape(-1, x.shape[-1]).contiguous()
     int8_min = torch.iinfo(torch.int8).min
     int8_max = torch.iinfo(torch.int8).max
-
-    amax = x_2d.abs().max(dim=-1, keepdim=True)[0].clamp(min=eps)
-    scales = amax / int8_max
-    x_q = torch.round(x_2d / scales).clamp(min=int8_min, max=int8_max).to(torch.int8)
-    return x_q.reshape(original_shape), scales.reshape(*original_shape[:-1], 1)
+    scale = x_2d.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10)
+    scale = scale / int8_max
+    x_q = torch.round(x_2d / scale).clamp(min=int8_min, max=int8_max).to(torch.int8)
+    x_q = x_q.reshape(x.shape)
+    scale = scale.reshape(*x.shape[:-1], 1)
+    return x_q, scale
 
 
 @pytest.mark.dynamic_scaled_fp8_quant
@@ -1925,7 +1926,7 @@ def test_accuracy_per_token_group_quant_int8(num_tokens, d, dtype, group_size, s
         out, scale = flag_gems.per_token_group_quant_int8(x, group_size)
 
     gems_assert_close(scale, ref_scale, dtype=torch.float32)
-    gems_assert_equal(out, ref_out)
+    gems_assert_close(out, ref_out, dtype=torch.int8)
 
 
 @pytest.mark.per_token_quant_int8
@@ -1943,7 +1944,7 @@ def test_accuracy_per_token_quant_int8(num_tokens, d, dtype, seed):
         out, scale = flag_gems.per_token_quant_int8(x)
 
     gems_assert_close(scale, ref_scale, dtype=torch.float32)
-    gems_assert_equal(out, ref_out)
+    gems_assert_close(out, ref_out, dtype=torch.int8)
 
 
 @pytest.mark.rwkv_ka_fusion

@@ -27,6 +27,7 @@ def per_token_quant_int8_kernel(
     tl.store(scale_ptr + row_id, scale_x)
 
 
+# Adapted from vllm v0.17.0
 def per_token_quant_int8(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     original_shape = x.shape
     if x.dim() > 2:

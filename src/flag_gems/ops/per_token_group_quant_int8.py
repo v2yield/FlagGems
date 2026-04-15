@@ -31,6 +31,7 @@ def per_token_group_quant_int8_kernel(
     tl.store(y_s_ptr, y_s)
 
 
+# Adapted from vllm v0.17.0
 def per_token_group_quant_int8(
     x: torch.Tensor,
     group_size: int,

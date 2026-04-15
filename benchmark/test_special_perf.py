@@ -1034,6 +1034,7 @@ def torch_per_token_group_quant_fp8_ref(x, group_size, scale_ue8m0):
 
 
 def torch_dynamic_scaled_fp8_quant_ref(x):
+    assert x.ndim == 2 and x.stride(-1) == 1
     fp8_max = float(torch.finfo(torch.float8_e4m3fn).max)
     fp8_min = float(torch.finfo(torch.float8_e4m3fn).min)
     min_scale = 1.0 / (fp8_max * 512.0)
@@ -1046,15 +1047,20 @@ def torch_dynamic_scaled_fp8_quant_ref(x):
 
 
 def torch_per_token_group_quant_int8_ref(x, group_size):
+    assert (
+        x.shape[-1] % group_size == 0
+    ), "the last dimension of `x` cannot be divisible by `group_size`"
+    assert x.is_contiguous(), "`x` is not contiguous"
+
     int8_min = torch.iinfo(torch.int8).min
     int8_max = torch.iinfo(torch.int8).max
     x_ = x.float().reshape(x.numel() // group_size, group_size)
     scale = x_.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10)
     scale = scale / int8_max
     x_q = (x_ / scale).clamp(min=int8_min, max=int8_max).to(torch.int8)
-    return x_q.reshape(x.shape), scale.reshape(
-        x.shape[:-1] + (x.shape[-1] // group_size,)
-    )
+    x_q = x_q.reshape(x.shape)
+    scale = scale.reshape(x.shape[:-1] + (x.shape[-1] // group_size,))
+    return x_q, scale
 
 
 def torch_per_token_quant_int8_ref(x):
@@ -1064,7 +1070,9 @@ def torch_per_token_quant_int8_ref(x):
     scale = x_2d.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10)
     scale = scale / int8_max
     x_q = torch.round(x_2d / scale).clamp(min=int8_min, max=int8_max).to(torch.int8)
-    return x_q.reshape(x.shape), scale.reshape(*x.shape[:-1], 1)
+    x_q = x_q.reshape(x.shape)
+    scale = scale.reshape(*x.shape[:-1], 1)
+    return x_q, scale
 
 
 class PerTokenGroupQuantFp8Benchmark(GenericBenchmark):
@@ -1104,8 +1112,8 @@ def test_perf_per_token_group_quant_fp8():
 
 
 class DynamicScaledFp8QuantBenchmark(GenericBenchmark):
-    def set_shapes(self, shape_file_path=None):
-        self.shapes = [(7, 512), (83, 4096), (2048, 5120)]
+    def set_more_shapes(self):
+        return None
 
 
 @pytest.mark.dynamic_scaled_fp8_quant
@@ -1126,8 +1134,8 @@ def test_perf_dynamic_scaled_fp8_quant():
 
 
 class PerTokenGroupQuantInt8Benchmark(GenericBenchmark):
-    def set_shapes(self, shape_file_path=None):
-        self.shapes = [(7, 512, 64), (83, 4096, 128), (2048, 5120, 256)]
+    def set_more_shapes(self):
+        return None
 
 
 @pytest.mark.per_token_group_quant_int8
@@ -1148,8 +1156,8 @@ def test_perf_per_token_group_quant_int8():
 
 
 class PerTokenQuantInt8Benchmark(GenericBenchmark):
-    def set_shapes(self, shape_file_path=None):
-        self.shapes = [(7, 512), (83, 4096), (2048, 5120)]
+    def set_more_shapes(self):
+        return None
 
 
 @pytest.mark.per_token_quant_int8
