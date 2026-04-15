@@ -1048,8 +1048,8 @@ def torch_dynamic_scaled_fp8_quant_ref(x):
 def torch_per_token_group_quant_int8_ref(x, group_size):
     int8_min = torch.iinfo(torch.int8).min
     int8_max = torch.iinfo(torch.int8).max
-    x_ = x.reshape(x.numel() // group_size, group_size)
-    scale = x_.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10).to(torch.float32)
+    x_ = x.float().reshape(x.numel() // group_size, group_size)
+    scale = x_.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10)
     scale = scale / int8_max
     x_q = (x_ / scale).clamp(min=int8_min, max=int8_max).to(torch.int8)
     return x_q.reshape(x.shape), scale.reshape(
@@ -1058,10 +1058,10 @@ def torch_per_token_group_quant_int8_ref(x, group_size):
 
 
 def torch_per_token_quant_int8_ref(x):
-    x_2d = x.reshape(-1, x.shape[-1]).contiguous()
+    x_2d = x.float().reshape(-1, x.shape[-1]).contiguous()
     int8_min = torch.iinfo(torch.int8).min
     int8_max = torch.iinfo(torch.int8).max
-    scale = x_2d.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10).to(torch.float32)
+    scale = x_2d.abs().max(dim=-1, keepdim=True)[0].clamp(min=1e-10)
     scale = scale / int8_max
     x_q = torch.round(x_2d / scale).clamp(min=int8_min, max=int8_max).to(torch.int8)
     return x_q.reshape(x.shape), scale.reshape(*x.shape[:-1], 1)

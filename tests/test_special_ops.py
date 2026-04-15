@@ -1838,8 +1838,8 @@ def native_per_token_group_quant_int8(x, group_size, eps=1e-10):
 
     int8_min = torch.iinfo(torch.int8).min
     int8_max = torch.iinfo(torch.int8).max
-    x_ = x.reshape(x.numel() // group_size, group_size)
-    amax = x_.abs().max(dim=-1, keepdim=True)[0].clamp(min=eps).to(torch.float32)
+    x_ = x.float().reshape(x.numel() // group_size, group_size)
+    amax = x_.abs().max(dim=-1, keepdim=True)[0].clamp(min=eps)
     x_s = amax / int8_max
     x_q = (x_ / x_s).clamp(min=int8_min, max=int8_max).to(torch.int8)
     return x_q.reshape(x.shape), x_s.reshape(
@@ -1849,11 +1849,11 @@ def native_per_token_group_quant_int8(x, group_size, eps=1e-10):
 
 def native_per_token_quant_int8(x, eps=1e-10):
     original_shape = x.shape
-    x_2d = x.reshape(-1, x.shape[-1]).contiguous()
+    x_2d = x.float().reshape(-1, x.shape[-1]).contiguous()
     int8_min = torch.iinfo(torch.int8).min
     int8_max = torch.iinfo(torch.int8).max
 
-    amax = x_2d.abs().max(dim=-1, keepdim=True)[0].clamp(min=eps).to(torch.float32)
+    amax = x_2d.abs().max(dim=-1, keepdim=True)[0].clamp(min=eps)
     scales = amax / int8_max
     x_q = torch.round(x_2d / scales).clamp(min=int8_min, max=int8_max).to(torch.int8)
     return x_q.reshape(original_shape), scales.reshape(*original_shape[:-1], 1)
