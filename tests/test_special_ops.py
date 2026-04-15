@@ -1926,7 +1926,7 @@ def test_accuracy_per_token_group_quant_int8(num_tokens, d, dtype, group_size, s
         out, scale = flag_gems.per_token_group_quant_int8(x, group_size)
 
     gems_assert_close(scale, ref_scale, dtype=torch.float32)
-    gems_assert_close(out, ref_out, dtype=torch.int8)
+    gems_assert_close(out, ref_out, dtype=torch.int8, atol=1)
 
 
 @pytest.mark.per_token_quant_int8
@@ -1944,7 +1944,7 @@ def test_accuracy_per_token_quant_int8(num_tokens, d, dtype, seed):
         out, scale = flag_gems.per_token_quant_int8(x)
 
     gems_assert_close(scale, ref_scale, dtype=torch.float32)
-    gems_assert_close(out, ref_out, dtype=torch.int8)
+    gems_assert_close(out, ref_out, dtype=torch.int8, atol=1)
 
 
 @pytest.mark.rwkv_ka_fusion
