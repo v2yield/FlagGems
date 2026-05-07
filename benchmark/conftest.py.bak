@@ -54,7 +54,7 @@ class BenchConfig:
         self.user_desired_metrics = None
         self.shape_file = os.path.join(os.path.dirname(__file__), "core_shapes.yaml")
         self.query = False
-        self.use_cudagraph = False
+        self.parallel = 0
 
 
 Config = BenchConfig()
@@ -101,13 +101,6 @@ def pytest_addoption(parser):
     )
 
     parser.addoption(
-        "--use_cudagraph",
-        action="store_true",
-        default=False,
-        help="Enable CUDA Graph in Triton benchmark timing when supported.",
-    )
-
-    parser.addoption(
         "--metrics",
         action="append",
         default=None,
@@ -151,6 +144,18 @@ def pytest_addoption(parser):
         help="Benchmark info recorded in log files or not",
     )
 
+    parser.addoption(
+        "--parallel",
+        action="store",
+        type=int,
+        default=0,
+        help=(
+            "Enable multi-GPU parallel benchmark execution across shapes. "
+            "Example: --parallel 8 means using GPU 0~7 in parallel. "
+            "Default 0 means serial execution."
+        ),
+    )
+
 
 def pytest_configure(config):
     global Config  # noqa: F824
@@ -160,8 +165,6 @@ def pytest_configure(config):
     Config.mode = BenchMode(mode_value)
 
     Config.query = config.getoption("--query")
-
-    Config.use_cudagraph = config.getoption("--use_cudagraph")
 
     level_value = config.getoption("--level")
     Config.bench_level = BenchLevel(level_value)
@@ -183,6 +186,7 @@ def pytest_configure(config):
     Config.shape_file = shape_file_str
 
     Config.record_log = config.getoption("--record") == "log"
+    Config.parallel = int(config.getoption("--parallel") or 0)
     if Config.record_log:
         cmd_args = [
             arg.replace(".py", "").replace("=", "_").replace("/", "_")
@@ -206,8 +210,6 @@ def pytest_configure(config):
         recordLogger.addHandler(handler)
         recordLogger.setLevel(logging.INFO)
         emit_record_logger("Benchmark record logger enabled")
-    
-    Config.use_cudagraph = config.getoption("--use_cudagraph")
 
 
 BUILTIN_MARKS = {
@@ -276,4 +278,3 @@ def extract_and_log_op_attributes(request):
     yield
     if Config.record_log and op_attributes:
         emit_record_logger(json.dumps(op_attributes, indent=2))
-

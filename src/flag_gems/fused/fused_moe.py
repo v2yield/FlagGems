@@ -192,42 +192,9 @@ def try_get_optimal_moe_config(
     top_k: int,
     dtype: str | None,
     M: int,
-    E: int,
     block_shape: list[int] | None = None,
 ) -> dict[str, int]:
     override_config: Optional[dict[str, Any]] = None
-
-    is_hopper = torch.cuda.is_available() and torch.cuda.get_device_capability() == (
-        9,
-        0,
-    )
-    if (
-        is_hopper
-        and dtype == "fp8_w8a8"
-        and block_shape is not None
-        and len(block_shape) == 2
-    ):
-        # Use heuristic config like hpc-ops
-        avg_tokens_per_expert = M * top_k // E
-        if avg_tokens_per_expert <= 16:
-            block_size_m = 16
-        elif avg_tokens_per_expert <= 32:
-            block_size_m = 32
-        elif avg_tokens_per_expert <= 48:
-            block_size_m = 48
-        else:
-            block_size_m = 64
-        config = {
-            "BLOCK_SIZE_M": block_size_m,
-            "BLOCK_SIZE_N": block_shape[0],
-            "BLOCK_SIZE_K": block_shape[1],
-            "GROUP_SIZE_M": 1,
-            "num_warps": 4,
-            "num_stages": 3,
-            "SWAP_AB": True,
-        }
-        override_config = config
-
     if override_config:
         config = override_config
     else:
@@ -542,7 +509,11 @@ def apply_moe_activation(
         )
     if activation in (MoEActivation.SILU, MoEActivation.SWIGLUOAI):
         N = output.size(-1)
-        if input.is_contiguous() and output.is_contiguous() and input.size(0) <= 32:
+        if (
+            input.is_contiguous()
+            and output.is_contiguous()
+            and input.size(0) <= _SMALL_M_SILU_MUL_THRESHOLD
+        ):
             small_m_silu_and_mul_packed(output, input)
         else:
             x, y = input[:, :N], input[:, N:]
@@ -571,6 +542,12 @@ def apply_moe_activation(
         raise ValueError(f"Unsupported FusedMoe activation: {activation}")
 
     return output
+
+
+_SMALL_M_FP8_QUANT_THRESHOLD = 16
+_SINGLE_LAUNCH_FP8_QUANT_MAX_M = 8
+_SINGLE_LAUNCH_FP8_QUANT_MAX_NUMEL = 65536
+_SMALL_M_SILU_MUL_THRESHOLD = 32
 
 
 def _get_fp8_quant_2d_config(
@@ -828,6 +805,99 @@ def dynamic_scaled_fp8_quant(
 
 
 @triton.jit
+def per_token_group_quant_fp8_kernel(
+    y_ptr,
+    y_q_ptr,
+    y_s_ptr,
+    group_size,
+    y_num_columns,
+    y_row_stride,
+    eps,
+    fp8_min,
+    fp8_max,
+    BLOCK: tl.constexpr,
+):
+    """
+    This function converts the tensor values into float8 values.
+    """
+    groups_per_row = y_num_columns // group_size
+    g_id = tl.program_id(0)
+    row = g_id // groups_per_row
+    row_g_id = g_id % groups_per_row
+
+    y_ptr_offset = (row.to(tl.int64) * y_row_stride) + (
+        row_g_id.to(tl.int64) * group_size
+    )
+    y_ptr += y_ptr_offset
+
+    y_q_ptr_offset = g_id.to(tl.int64) * group_size
+    y_q_ptr += y_q_ptr_offset
+    y_s_ptr += g_id
+
+    cols = tl.arange(0, BLOCK)
+    mask = cols < group_size
+
+    y = tl.load(y_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+    # Quant
+    _absmax = tl.maximum(tl.max(tl.abs(y)), eps)
+    scale_raw = _absmax / fp8_max
+    y_s = scale_raw
+    y_q = tl.clamp(y / y_s, fp8_min, fp8_max).to(y_q_ptr.dtype.element_ty)
+
+    tl.store(y_q_ptr + cols, y_q, mask=mask)
+    tl.store(y_s_ptr, y_s)
+
+
+def per_token_group_quant_fp8(
+    x: torch.Tensor,
+    group_size: int,
+    eps: float = 1e-10,
+    dtype: torch.dtype = torch.float8_e4m3fn,
+    out_q: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Function to perform per-token-group quantization on an input tensor `x`."""
+    assert x.shape[-1] % group_size == 0, (
+        f"the last dimension of `x` {x.shape[-1]} must be divisible "
+        f"by `group_size` {group_size}"
+    )
+    assert x.stride(-1) == 1, "`x` groups must be contiguous"
+
+    fp8_min, fp8_max = torch.finfo(torch.float8_e4m3fn)
+
+    assert out_q is None or out_q.shape == x.shape
+    x_q = out_q
+    if x_q is None:
+        x_q = torch.empty(x.shape, device=x.device, dtype=dtype)
+
+    shape = x.shape[:-1] + (x.shape[-1] // group_size,)
+    x_s = torch.empty(shape, device=x.device, dtype=torch.float32)
+
+    M = x.numel() // group_size
+    N = group_size
+    BLOCK = triton.next_power_of_2(N)
+
+    num_warps = min(max(BLOCK // 256, 1), 8)
+    num_stages = 1
+
+    per_token_group_quant_fp8_kernel[(M,)](
+        x,
+        x_q,
+        x_s,
+        group_size,
+        x.shape[1],
+        x.stride(0),
+        eps,
+        fp8_min=fp8_min,
+        fp8_max=fp8_max,
+        BLOCK=BLOCK,
+        num_warps=num_warps,
+        num_stages=num_stages,
+    )
+
+    return x_q, x_s
+
+
+@triton.jit
 def per_token_quant_int8_kernel(
     x_ptr,
     xq_ptr,
@@ -837,6 +907,30 @@ def per_token_quant_int8_kernel(
     N,
     BLOCK: tl.constexpr,
 ):
+    # row_id = tl.program_id(0)
+    # row_in_base = row_id * stride_x
+    # row_out_base = row_id * stride_xq
+    # row_absmax = 0.0
+
+    # for off in tl.range(0, N, BLOCK):
+    #     cols = off + tl.arange(0, BLOCK)
+    #     mask = cols < N
+    #     x = tl.load(x_ptr + row_in_base + cols, mask=mask, other=0.0).to(tl.float32)
+    #     row_absmax = tl.maximum(row_absmax, tl.max(tl.abs(x), axis=0))
+
+    # absmax = tl.maximum(row_absmax, 1e-10)
+    # scale_x = absmax / 127.0
+    # inv_scale_x = 127.0 / absmax
+
+    # for off in tl.range(0, N, BLOCK):
+    #     cols = off + tl.arange(0, BLOCK)
+    #     mask = cols < N
+    #     x = tl.load(x_ptr + row_in_base + cols, mask=mask, other=0.0).to(tl.float32)
+    #     x_q = tl.extra.cuda.libdevice.round(x * inv_scale_x)
+    #     x_q = tl.clamp(x_q, -128.0, 127.0).to(xq_ptr.dtype.element_ty)
+    #     tl.store(xq_ptr + row_out_base + cols, x_q, mask=mask)
+
+    # tl.store(scale_ptr + row_id, scale_x)
     row_id = tl.program_id(0)
 
     cols = tl.arange(0, BLOCK)
@@ -965,39 +1059,12 @@ def _fp8_quantize(
     per_act_token: bool,
     block_shape: Optional[list[int]] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """FP8 E4M3 quantization: per-tensor, per-token, or block-wise."""
-    eps = 1e-10
-
+    """FP8 E4M3 quantization: keep dispatch shallow, specialize the hot paths."""
     if block_shape is not None:
         assert not per_act_token
         assert len(block_shape) == 2
-        block_k = block_shape[1]
-        assert A.size(-1) % block_k == 0
-        if A.ndim == 2 and A.stride(-1) == 1:
-            from flag_gems.ops.per_token_group_quant_fp8 import (
-                per_token_group_quant_fp8,
-            )
-
-            return per_token_group_quant_fp8(
-                A,
-                group_size=block_k,
-                eps=eps,
-                dtype=_FP8_DTYPE,
-                column_major_scales=False,
-                scale_ue8m0=False,
-            )
-        orig_shape = A.shape
-        A_flat = A.reshape(-1, A.size(-1))
-        M, K = A_flat.shape
-        A_groups = A_flat.reshape(M * (K // block_k), block_k)
-        amax = (
-            A_groups.abs().amax(dim=-1, keepdim=True).clamp(min=eps).to(torch.float32)
-        )
-        scale = amax / _FP8_MAX
-        A_q = (A_groups.float() / scale).clamp(_FP8_MIN, _FP8_MAX).to(_FP8_DTYPE)
-        A_q = A_q.reshape(orig_shape)
-        scale = scale.reshape(M, K // block_k)
-        return A_q, scale
+        _, block_k = block_shape[0], block_shape[1]
+        return per_token_group_quant_fp8(A, block_k)
 
     elif per_act_token:
         A_flat = A.reshape(-1, A.size(-1))
@@ -1438,7 +1505,6 @@ def fused_moe_kernel(
     use_int8_w8a16: tl.constexpr,
     per_channel_quant: tl.constexpr,
     HAS_BIAS: tl.constexpr,
-    SWAP_AB: tl.constexpr,
 ):
     """Fused MoE kernel: token × expert GEMM with quantization support."""
     # Map pid to C block (grouped ordering for L2 reuse)
@@ -1526,8 +1592,6 @@ def fused_moe_kernel(
         bias = tl.load(bias_ptrs, mask=(offs_bn < N), other=0.0)
     # Accumulate C block in fp32
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    if SWAP_AB:
-        accumulator_nm = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_M), dtype=tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.load(
             a_ptrs,
@@ -1544,16 +1608,9 @@ def fused_moe_kernel(
                 a_scale = tl.load(
                     a_scale_ptrs + offs_ks * stride_ask, mask=token_mask, other=0.0
                 )
-                if SWAP_AB:
-                    b_scale = tl.load(b_scale_ptrs + offs_ks * stride_bsk)
-                    accumulator_nm += (
-                        tl.dot(tl.trans(b), tl.trans(a))
-                        * b_scale[:, None]
-                        * a_scale[None, :]
-                    )
-                else:
-                    b_scale = tl.load(b_scale_ptrs + offs_ks * stride_bsk)
-                    accumulator += tl.dot(a, b) * a_scale[:, None] * b_scale[None, :]
+                b_scale = tl.load(b_scale_ptrs + offs_ks * stride_bsk)
+
+                accumulator += tl.dot(a, b) * a_scale[:, None] * b_scale[None, :]
             else:
                 if use_fp8_w8a8:
                     accumulator = tl.dot(a, b, acc=accumulator)
@@ -1563,9 +1620,6 @@ def fused_moe_kernel(
             accumulator += tl.dot(a, b)
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
-
-    if SWAP_AB:
-        accumulator = tl.trans(accumulator_nm)
 
     # Dequantization
     if use_int8_w8a16:
@@ -1748,7 +1802,6 @@ def invoke_fused_moe_triton_kernel(
     if block_shape is not None:
         BLOCK_SIZE_K = min(BLOCK_SIZE_K, min(block_shape[0], block_shape[1]))
 
-    swap_AB = config.pop("SWAP_AB", False)
     fused_moe_kernel[grid](
         A,
         B,
@@ -1790,7 +1843,6 @@ def invoke_fused_moe_triton_kernel(
         naive_block_assignment=(sorted_token_ids is None),
         HAS_BIAS=HAS_BIAS,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
-        SWAP_AB=swap_AB,
         **config,
     )
 
@@ -1972,7 +2024,6 @@ def fused_experts_impl(
         top_k_num,
         config_dtype,
         block_shape=block_shape,
-        E=E,
     )
 
     config = get_config_func(M)
